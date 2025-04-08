@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 
 interface CreateAgentModalProps {
   isOpen: boolean;
@@ -170,8 +171,14 @@ export default function CreateAgentModal({
             <Button 
               type="submit" 
               disabled={createAgentMutation.isPending}
+              className="min-w-[120px]"
             >
-              {createAgentMutation.isPending ? "Creating..." : "Create Agent"}
+              {createAgentMutation.isPending ? (
+                <>
+                  <Spinner className="mr-2 h-4 w-4" />
+                  Initializing...
+                </>
+              ) : "Create Agent"}
             </Button>
           </DialogFooter>
         </form>

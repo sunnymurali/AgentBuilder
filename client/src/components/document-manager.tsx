@@ -243,11 +243,14 @@ export default function DocumentManager({ agent }: DocumentManagerProps) {
                 <Input
                   id="document"
                   type="file"
-                  accept=".pdf,.docx,.doc,.csv"
+                  accept=".pdf,.docx,.doc,.csv,.xlsx,.xls"
                   onChange={handleFileChange}
                 />
                 <p className="text-sm text-gray-500">
-                  Supported formats: PDF, Word, CSV (preferred for data analysis)
+                  Supported formats: PDF, Word, CSV, Excel (.xlsx/.xls)
+                </p>
+                <p className="text-xs text-amber-600 mt-1">
+                  Note: Large files may take several minutes to process due to AI indexing.
                 </p>
               </div>
               <div className="grid w-full gap-1.5">
@@ -273,7 +276,11 @@ export default function DocumentManager({ agent }: DocumentManagerProps) {
                   {uploadMutation.isPending ? (
                     <>
                       <Spinner className="mr-2 h-4 w-4" />
-                      Uploading...
+                      {file && file.type.includes('excel') || file?.name.endsWith('.xlsx') || file?.name.endsWith('.xls') 
+                        ? "Processing Excel file..." 
+                        : file?.type.includes('csv') 
+                          ? "Processing CSV data..." 
+                          : "Uploading..."}
                     </>
                   ) : (
                     "Upload"
