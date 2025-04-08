@@ -32,13 +32,45 @@ app.add_middleware(
     allow_headers=["*"],  # Allow all headers
 )
 
-# Set up OpenAI client - wrapped in try/except for flexibility
+# Set up OpenAI/Azure OpenAI client - wrapped in try/except for flexibility
 try:
     import openai
-    openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    
+    # Check for Azure OpenAI credentials first
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    azure_key = os.getenv("AZURE_OPENAI_KEY")
+    azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    azure_api_version = "2024-08-01-preview"  # Latest API version
+    
+    if azure_endpoint and azure_key and azure_deployment:
+        print("Using Azure OpenAI as primary provider")
+        # Initialize Azure OpenAI client
+        azure_client = openai.AzureOpenAI(
+            azure_endpoint=azure_endpoint,
+            api_key=azure_key,
+            api_version=azure_api_version
+        )
+        openai_client = azure_client
+        using_azure = True
+        
+        # Define embedding model
+        embedding_model = "text-embedding-r-large"  # Azure embedding model
+    else:
+        # Fallback to regular OpenAI
+        print("Azure OpenAI credentials not complete, falling back to OpenAI")
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            print("WARNING: OPENAI_API_KEY environment variable not set")
+        openai_client = openai.OpenAI(api_key=openai_api_key)
+        using_azure = False
+        
+        # Define embedding model for OpenAI
+        embedding_model = "text-embedding-ada-002"  # OpenAI embedding model
 except ImportError:
     print("OpenAI API not installed or key not available, some features will be limited")
     openai_client = None
+    using_azure = False
+    embedding_model = None
 
 # Pydantic models for data validation
 class AgentBase(BaseModel):
@@ -282,16 +314,33 @@ except ImportError:
         
         # Simple direct completion without RAG
         try:
-            response = openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",  # Use a less expensive model as fallback
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    *[{"role": m["role"], "content": m["content"]} for m in messages],
-                    {"role": "user", "content": query}
-                ]
-            )
+            # Prepare messages
+            formatted_messages = [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m["role"], "content": m["content"]} for m in messages],
+                {"role": "user", "content": query}
+            ]
+            
+            # Use appropriate API call based on provider
+            if using_azure:
+                response = openai_client.chat.completions.create(
+                    deployment_id=azure_deployment,
+                    messages=formatted_messages,
+                    temperature=0.7,
+                    max_tokens=800
+                )
+            else:
+                # Fallback to regular OpenAI
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o",  # Use modern model
+                    messages=formatted_messages,
+                    temperature=0.7,
+                    max_tokens=800
+                )
+                
             return {"response": response.choices[0].message.content}
         except Exception as e:
+            print(f"Error in fallback query processing: {str(e)}")
             return {"response": f"Error generating response: {str(e)}"}
     
     using_fallback = True
@@ -324,11 +373,68 @@ else:
                     # Very last resort
                     self.client = chromadb.Client()
             
-            # Create document collection if it doesn't exist
+            # Create document collection if it doesn't exist with proper embedding function
             try:
-                self.document_collection = self.client.get_collection("documents")
-            except:
-                self.document_collection = self.client.create_collection("documents")
+                # Import embedding function from rag_graph.py module if not available in this scope
+                # This ensures we use the same embedding configuration
+                try:
+                    from rag_graph import embedding_function
+                    print("Using embedding function from rag_graph module")
+                except ImportError:
+                    # Fallback to creating our own embedding function if rag_graph's isn't available
+                    from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
+                    
+                    # Check for Azure OpenAI credentials
+                    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+                    azure_key = os.getenv("AZURE_OPENAI_KEY")
+                    azure_api_version = "2024-08-01-preview"
+                    
+                    if azure_endpoint and azure_key:
+                        # Configure for Azure OpenAI
+                        azure_embedding_deployment = os.getenv("AZURE_EMBEDDING_DEPLOYMENT", "Embedding-Model")
+                        embedding_model = "text-embedding-r-large"  # Azure embedding model
+                        
+                        embedding_function = OpenAIEmbeddingFunction(
+                            api_key=azure_key,
+                            api_base=azure_endpoint,
+                            api_type="azure",
+                            api_version=azure_api_version,
+                            model_name=embedding_model,
+                            deployment_id=azure_embedding_deployment
+                        )
+                        print("Created Azure OpenAI embedding function")
+                    else:
+                        # Use OpenAI
+                        openai_api_key = os.getenv("OPENAI_API_KEY")
+                        embedding_model = "text-embedding-ada-002"  # OpenAI embedding model
+                        
+                        embedding_function = OpenAIEmbeddingFunction(
+                            api_key=openai_api_key,
+                            model_name=embedding_model
+                        )
+                        print("Created OpenAI embedding function")
+                
+                # Get or create collection with the embedding function
+                self.document_collection = self.client.get_collection(
+                    name="documents",
+                    embedding_function=embedding_function
+                )
+                print("Successfully retrieved document collection")
+            except Exception as e:
+                print(f"Error getting document collection: {str(e)}")
+                try:
+                    # Create new collection with embedding function
+                    self.document_collection = self.client.create_collection(
+                        name="documents",
+                        metadata={"hnsw:space": "cosine"},
+                        embedding_function=embedding_function
+                    )
+                    print("Created new document collection with embedding function")
+                except Exception as e2:
+                    print(f"Error creating document collection: {str(e2)}")
+                    # Last resort - create without embedding function
+                    self.document_collection = self.client.create_collection("documents")
+                    print("Created document collection without embedding function (fallback)")
             
             # Document ID counter
             self.doc_id_counter = self.initialize_counter()
@@ -561,14 +667,30 @@ async def create_message(agent_id: int, message: MessageBase):
             response_content = "I'm sorry, I couldn't generate a response."
             
             if openai_client is not None:
+                # Prepare the messages
+                api_messages = [
+                    {"role": "system", "content": agent["systemPrompt"]},
+                    *[{"role": m["role"], "content": m["content"]} for m in messages]
+                ]
+                
                 # If it's a simple chat without document context
-                completion = openai_client.chat.completions.create(
-                    model=agent["model"],
-                    messages=[
-                        {"role": "system", "content": agent["systemPrompt"]},
-                        *[{"role": m["role"], "content": m["content"]} for m in messages]
-                    ]
-                )
+                if using_azure:
+                    # Use Azure OpenAI
+                    completion = openai_client.chat.completions.create(
+                        deployment_id=azure_deployment,
+                        messages=api_messages,
+                        temperature=0.7,
+                        max_tokens=800
+                    )
+                else:
+                    # Use regular OpenAI
+                    completion = openai_client.chat.completions.create(
+                        model=agent["model"],
+                        messages=api_messages,
+                        temperature=0.7,
+                        max_tokens=800
+                    )
+                
                 response_content = completion.choices[0].message.content
             else:
                 response_content = "OpenAI API is not available. Please check your configuration."

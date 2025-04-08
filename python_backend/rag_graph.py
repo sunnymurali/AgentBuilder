@@ -20,20 +20,68 @@ class GraphState(TypedDict):
 
 # Initialize clients with error handling
 try:
-    # Initialize OpenAI client
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        print("WARNING: OPENAI_API_KEY environment variable not set")
-    openai_client = openai.OpenAI(api_key=openai_api_key)
+    # Check for Azure OpenAI credentials first
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    azure_key = os.getenv("AZURE_OPENAI_KEY")
+    azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    azure_api_version = "2024-08-01-preview"  # Latest API version
     
-    # Initialize ChromaDB client with basic settings to prevent errors
+    if azure_endpoint and azure_key and azure_deployment:
+        print("Using Azure OpenAI as primary provider")
+        # Initialize Azure OpenAI client
+        azure_client = openai.AzureOpenAI(
+            azure_endpoint=azure_endpoint,
+            api_key=azure_key,
+            api_version=azure_api_version
+        )
+        openai_client = azure_client
+        using_azure = True
+        
+        # Set embedding model for Azure
+        embedding_model = "text-embedding-r-large"  # Azure embedding model
+        azure_embedding_deployment = os.getenv("AZURE_EMBEDDING_DEPLOYMENT", "Embedding-Model")
+    else:
+        # Fallback to regular OpenAI
+        print("Azure OpenAI credentials not complete, falling back to OpenAI")
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            print("WARNING: OPENAI_API_KEY environment variable not set")
+        openai_client = openai.OpenAI(api_key=openai_api_key)
+        using_azure = False
+        
+        # Set embedding model for OpenAI
+        embedding_model = "text-embedding-ada-002"  # OpenAI embedding model
+    
+    # Initialize ChromaDB client with embedding configuration
+    # Create embedding function based on provider (Azure or OpenAI)
+    if using_azure:
+        # Configure for Azure OpenAI embeddings
+        from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
+        embedding_function = OpenAIEmbeddingFunction(
+            api_key=azure_key,
+            api_base=azure_endpoint,
+            api_type="azure",
+            api_version=azure_api_version,
+            model_name=embedding_model,
+            deployment_id=azure_embedding_deployment
+        )
+    else:
+        # Configure for regular OpenAI embeddings
+        from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
+        embedding_function = OpenAIEmbeddingFunction(
+            api_key=openai_api_key,
+            model_name=embedding_model
+        )
+    
+    # Initialize ChromaDB with the configured embedding function
     chroma_client = chromadb.Client()
-    print("Successfully initialized ChromaDB client")
+    print("Successfully initialized ChromaDB client with embedding function")
 except Exception as e:
     print(f"Error initializing clients: {str(e)}")
     # Create fallback clients to avoid crashes
     openai_client = None
     chroma_client = None
+    using_azure = False
 
 def get_documents_collection():
     """Get or create the documents collection with error handling."""
@@ -42,13 +90,18 @@ def get_documents_collection():
         return None
     
     try:
-        return chroma_client.get_collection("documents")
+        # Get the collection with embedding function
+        return chroma_client.get_collection(
+            name="documents",
+            embedding_function=embedding_function
+        )
     except Exception as e:
         try:
             print(f"Creating new ChromaDB collection: {str(e)}")
             return chroma_client.create_collection(
                 name="documents", 
-                metadata={"hnsw:space": "cosine"}
+                metadata={"hnsw:space": "cosine"},
+                embedding_function=embedding_function
             )
         except Exception as e2:
             print(f"Failed to create ChromaDB collection: {str(e2)}")
@@ -246,13 +299,23 @@ def generate_draft_response(state: GraphState) -> GraphState:
         # Add current query
         api_messages.append({"role": "user", "content": query})
         
-        # Call OpenAI API
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",  # the newest OpenAI model is "gpt-4o" which was released May 13, 2024
-            messages=api_messages,
-            temperature=0.3,  # Lower temperature for factual responses
-            max_tokens=1500
-        )
+        # Call OpenAI API - different parameters for Azure vs. OpenAI
+        if using_azure:
+            # For Azure OpenAI, use the deployment name instead of model
+            response = openai_client.chat.completions.create(
+                deployment_id=azure_deployment,  # Use deployment name for Azure
+                messages=api_messages,
+                temperature=0.3,  # Lower temperature for factual responses
+                max_tokens=1500
+            )
+        else:
+            # For regular OpenAI
+            response = openai_client.chat.completions.create(
+                model="gpt-4o",  # the newest OpenAI model is "gpt-4o" which was released May 13, 2024
+                messages=api_messages,
+                temperature=0.3,  # Lower temperature for factual responses
+                max_tokens=1500
+            )
         
         # Extract the assistant's message
         response_content = response.choices[0].message.content
@@ -328,12 +391,20 @@ def validate_response(state: GraphState) -> GraphState:
                 
                 # Call OpenAI for validation
                 if openai_client:
-                    validation_response = openai_client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=validation_messages,
-                        temperature=0.2,
-                        max_tokens=500
-                    )
+                    if using_azure:
+                        validation_response = openai_client.chat.completions.create(
+                            deployment_id=azure_deployment,
+                            messages=validation_messages,
+                            temperature=0.2,
+                            max_tokens=500
+                        )
+                    else:
+                        validation_response = openai_client.chat.completions.create(
+                            model="gpt-4o",
+                            messages=validation_messages,
+                            temperature=0.2,
+                            max_tokens=500
+                        )
                     
                     validation_result = validation_response.choices[0].message.content
                     
@@ -368,12 +439,20 @@ def validate_response(state: GraphState) -> GraphState:
                             }
                         ]
                         
-                        corrected_response = openai_client.chat.completions.create(
-                            model="gpt-4o",
-                            messages=correction_messages,
-                            temperature=0.3,
-                            max_tokens=1000
-                        )
+                        if using_azure:
+                            corrected_response = openai_client.chat.completions.create(
+                                deployment_id=azure_deployment,
+                                messages=correction_messages,
+                                temperature=0.3,
+                                max_tokens=1000
+                            )
+                        else:
+                            corrected_response = openai_client.chat.completions.create(
+                                model="gpt-4o",
+                                messages=correction_messages,
+                                temperature=0.3,
+                                max_tokens=1000
+                            )
                         
                         return {
                             **state,
@@ -409,12 +488,20 @@ def validate_response(state: GraphState) -> GraphState:
             ]
             
             # Get quality rating
-            quality_check = openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=validation_check,
-                temperature=0.2,
-                max_tokens=300
-            )
+            if using_azure:
+                quality_check = openai_client.chat.completions.create(
+                    deployment_id=azure_deployment,
+                    messages=validation_check,
+                    temperature=0.2,
+                    max_tokens=300
+                )
+            else:
+                quality_check = openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=validation_check,
+                    temperature=0.2,
+                    max_tokens=300
+                )
             
             quality_result = quality_check.choices[0].message.content
             
@@ -456,12 +543,20 @@ def validate_response(state: GraphState) -> GraphState:
                     }
                 ]
                 
-                improved_response = openai_client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=improvement_messages,
-                    temperature=0.3,
-                    max_tokens=1000
-                )
+                if using_azure:
+                    improved_response = openai_client.chat.completions.create(
+                        deployment_id=azure_deployment,
+                        messages=improvement_messages,
+                        temperature=0.3,
+                        max_tokens=1000
+                    )
+                else:
+                    improved_response = openai_client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=improvement_messages,
+                        temperature=0.3,
+                        max_tokens=1000
+                    )
                 
                 return {
                     **state,
@@ -664,13 +759,21 @@ def fallback_rag_process(query: str, messages: List[Dict[str, Any]], agent_id: i
                 # Add current query
                 api_messages.append({"role": "user", "content": query})
                 
-                # Make API call
-                response = openai_client.chat.completions.create(
-                    model="gpt-4o",  # the newest OpenAI model is "gpt-4o"
-                    messages=api_messages,
-                    temperature=0.3,  # Lower temperature for factual responses
-                    max_tokens=1500
-                )
+                # Make API call - handle Azure vs OpenAI differently
+                if using_azure:
+                    response = openai_client.chat.completions.create(
+                        deployment_id=azure_deployment,
+                        messages=api_messages,
+                        temperature=0.3,  # Lower temperature for factual responses
+                        max_tokens=1500
+                    )
+                else:
+                    response = openai_client.chat.completions.create(
+                        model="gpt-4o",  # the newest OpenAI model is "gpt-4o"
+                        messages=api_messages,
+                        temperature=0.3,  # Lower temperature for factual responses
+                        max_tokens=1500
+                    )
                 
                 response_content = response.choices[0].message.content
                 
