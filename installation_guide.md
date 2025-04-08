@@ -5,10 +5,10 @@
 Install the following Python packages to run the application locally:
 
 ```bash
-pip install chromadb fastapi uvicorn pydantic python-multipart PyPDF2 python-docx pandas openpyxl openai langchain langchain-community langgraph python-dotenv
+pip install fastapi uvicorn pydantic python-multipart PyPDF2 python-docx pandas openpyxl openai langchain langchain-community langgraph python-dotenv faiss-cpu chromadb flask-cors
 ```
 
-If you encounter issues installing ChromaDB, the application has a fallback mode that will still work without it. Advanced RAG features will be limited, but basic functionality will still work.
+The application uses FAISS (Facebook AI Similarity Search) as the primary vector store for improved performance. ChromaDB is available as an alternative implementation.
 
 ## Node.js Dependencies
 
@@ -39,7 +39,7 @@ The simplest way to run the application is:
 ```
 
 This script will:
-1. Check if ChromaDB is installed
+1. Check if the required packages are installed
 2. Check if a Python server is already running on port 5001
 3. Start both the Python backend and Node.js frontend
 
@@ -50,6 +50,11 @@ This option is useful for development when you want to see separate logs for fro
 1. Start the Python backend:
 ```bash
 ./start-python.sh
+```
+
+Or to use the FAISS implementation (recommended):
+```bash
+./run_faiss_backend.sh
 ```
 
 2. In a separate terminal, start only the Node.js frontend:

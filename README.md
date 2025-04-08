@@ -35,7 +35,8 @@ The application consists of two main components:
 ### Key Technologies:
 
 - **RAG Processing**: LangGraph-based retrieval, generation, and validation pipeline
-- **Document Storage**: ChromaDB vector database (with fallback to JSON storage)
+- **Vector Storage**: FAISS (Facebook AI Similarity Search) for efficient similarity search
+- **Alternative Storage**: ChromaDB vector database (as secondary option)
 - **Data Analysis**: Pandas for CSV and Excel data processing
 - **Text Extraction**: PyPDF2 and python-docx for document parsing
 
@@ -48,7 +49,10 @@ Please see the `installation_guide.md` file for detailed setup instructions.
 This application supports multiple deployment scenarios:
 
 - **All-in-One**: Start both frontend and backend with `./start.sh`
-- **Separate Components**: Run `./start-python.sh` for the backend and `./start-frontend.sh` for the frontend
+- **Separate Components**: 
+  - Run `./start-python.sh` for the ChromaDB backend or
+  - Run `./run_faiss_backend.sh` for the recommended FAISS implementation
+  - Run `./start-frontend.sh` for the frontend
 - **Frontend Only**: Run with an existing Python backend using `./start.sh --skip-python`
 
 ## Sample Data
